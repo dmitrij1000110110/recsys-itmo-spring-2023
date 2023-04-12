@@ -16,6 +16,7 @@ from botify.recommenders.sticky_artist import StickyArtist
 from botify.recommenders.toppop import TopPop
 from botify.recommenders.indexed import Indexed
 from botify.recommenders.contextual import Contextual
+from botify.recommenders.contextual_with_similarities import ContextualWithSimilarities
 from botify.track import Catalog
 
 import numpy as np
@@ -33,6 +34,7 @@ tracks_with_diverse_recs_redis = Redis(app, config_prefix="REDIS_TRACKS_WITH_DIV
 artists_redis = Redis(app, config_prefix="REDIS_ARTIST")
 recommendations_redis = Redis(app, config_prefix="REDIS_RECOMMENDATIONS")
 recommendations_ub_redis = Redis(app, config_prefix="REDIS_RECOMMENDATIONS_UB")
+recommendations_similar_users_redis = Redis(app, config_prefix="REDIS_RECOMMENDATIONS_SIMILAR_USERS")
 
 data_logger = DataLogger(app)
 
@@ -44,6 +46,7 @@ catalog.upload_tracks(tracks_redis.connection, tracks_with_diverse_recs_redis.co
 catalog.upload_artists(artists_redis.connection)
 catalog.upload_recommendations(recommendations_redis.connection)
 catalog.upload_recommendations(recommendations_ub_redis.connection, "RECOMMENDATIONS_UB_FILE_PATH")
+#catalog.upload_similar_users(recommendations_similar_users_redis.connection, "SIMILAR_USERS_FILE_PATH")
 
 parser = reqparse.RequestParser()
 parser.add_argument("track", type=int, location="json", required=True)
@@ -67,6 +70,23 @@ class Track(Resource):
             abort(404, description="Track not found")
 
 
+def read_similarities():
+    reader = open('../data/similar_users.txt', 'r')
+    lines = reader.readlines()
+    m = len(lines)
+    similar_users = [[] for i in range(m)]
+    total_similarities = [0.0 for i in range(m)]
+    for i in range(m):
+        line = lines[i]
+        values = list(map(lambda s: float(s), line.split(' ')))
+        k = values[0]
+        total_similarities[i] = values[0]
+        for j in range(int(k)):
+            sim = values[2 + 2 * j]
+            i1 = values[3 + 2 * j]
+            similar_users[i].append([sim, i1])
+    return m, similar_users, total_similarities
+
 class NextTrack(Resource):
     def post(self, user: int):
         start = time.time()
@@ -74,21 +94,11 @@ class NextTrack(Resource):
         args = parser.parse_args()
 
         # TODO Seminar 6 step 6: Wire RECOMMENDERS A/B experiment
-        treatment = Experiments.RECOMMENDERS.assign(user)
+        treatment = Experiments.HOMEWORK.assign(user)
         if treatment == Treatment.T1:
-            recommender = StickyArtist(tracks_redis.connection, artists_redis.connection, catalog)
-        elif treatment == Treatment.T2:
-            recommender = TopPop(tracks_redis.connection, catalog.top_tracks[:100])
-        elif treatment == Treatment.T3:
-            recommender = Indexed(tracks_redis.connection, recommendations_ub_redis.connection, catalog)
-        elif treatment == Treatment.T4:
-            recommender = Indexed(tracks_redis.connection, recommendations_redis.connection, catalog)
-        elif treatment == Treatment.T5:
-            recommender = Contextual(tracks_redis.connection, catalog)
-        elif treatment == Treatment.T6:
-            recommender = Contextual(tracks_with_diverse_recs_redis.connection, catalog)
+            recommender = ContextualWithSimilarities(tracks_redis.connection, catalog, app)
         else:
-            recommender = Random(tracks_redis.connection)
+            recommender = Contextual(tracks_redis.connection, catalog)
 
         recommendation = recommender.recommend_next(user, args.track, args.time)
 
@@ -130,5 +140,5 @@ api.add_resource(LastTrack, "/last/<int:user>")
 
 
 if __name__ == "__main__":
-    http_server = WSGIServer(("", 5000), app)
+    http_server = WSGIServer(("", 5001), app)
     http_server.serve_forever()
